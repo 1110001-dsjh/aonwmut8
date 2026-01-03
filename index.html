@@ -1,0 +1,879 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>血壓紀錄小幫手</title>
+    <!-- 載入 Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 載入 Chart.js CDN for chart visualization -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@100..900&display=swap');
+        body { font-family: 'Inter', sans-serif; }
+        .animate-fade-in {
+            animation: fadeIn 0.5s ease-out;
+        }
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        /* 定製歷史記錄區域的滾動條，使其更美觀 */
+        .custom-scrollbar::-webkit-scrollbar {
+            width: 4px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-thumb {
+            background-color: #a7f3d0; /* Tailwind teal-200 */
+            border-radius: 2px;
+        }
+        .custom-scrollbar::-webkit-scrollbar-track {
+            background-color: #f0fdf4; /* Tailwind green-50 */
+        }
+        /* 針對 Range Slider 進行簡單樣式重置和著色 */
+        input[type="range"] {
+            -webkit-appearance: none;
+            appearance: none;
+            cursor: pointer;
+            height: 8px; /* Track height */
+        }
+        input[type="range"]::-webkit-slider-runnable-track {
+            background: #b2f5ea; /* Tailwind teal-200 */
+            border-radius: 9999px;
+            height: 8px;
+        }
+        input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            appearance: none;
+            height: 20px;
+            width: 20px;
+            background: #0d9488; /* Tailwind teal-600 */
+            border-radius: 50%;
+            margin-top: -6px;
+            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2);
+        }
+        input[type="range"]:focus::-webkit-slider-thumb {
+            outline: 3px solid #6ee7b7; /* Tailwind emerald-300 */
+            outline-offset: 2px;
+        }
+
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-900 pb-20">
+    <!-- 主要應用程式容器 -->
+    <div id="app">
+        <!-- 內容將由 JavaScript 渲染 -->
+    </div>
+    
+    <!-- 自定義模態框容器 (用於取代 alert 和 confirm) -->
+    <div id="modal-container" class="fixed inset-0 z-50 hidden bg-black bg-opacity-50 items-center justify-center p-4 transition-opacity duration-300">
+        <div id="custom-modal" class="bg-white p-6 rounded-xl shadow-2xl max-w-sm w-full transform transition-all scale-95 opacity-0 duration-300">
+            <h3 id="modal-title" class="text-xl font-bold text-slate-800 mb-3"></h3>
+            <p id="modal-message" class="text-slate-600 mb-6"></p>
+            <div id="modal-actions" class="flex justify-end space-x-3">
+                <!-- 按鈕將由 JavaScript 插入 -->
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // --- 全域狀態與設定 ---
+        const app = document.getElementById('app');
+        let records = [];
+        let currentView = 'input';
+        let chartInstance = null; // Chart.js 實例
+
+        // Lucide Icons 的 SVG 字串表示 (取代 React 元件)
+        const ICONS = {
+            Activity: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-4l-3 9L9 3l-3 9H2"/></svg>`,
+            Heart: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>`,
+            Calendar: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 2v4"/><path d="M16 2v4"/><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/></svg>`,
+            Trash2: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M10 11v6"/><path d="M14 11v6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>`,
+            TrendingUp: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m22 7-8.5 8.5-5-5L2 17"/><path d="M16 7h6v6"/></svg>`,
+            AlertCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/></svg>`,
+            Save: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8"/><path d="M7 3v5h8"/></svg>`,
+            History: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-3.5 0"/><path d="M3.5 5.5l4.3 4.3"/><path d="M12 7v5l4 2"/></svg>`,
+            PlusCircle: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 8v8"/><path d="M8 12h8"/></svg>`,
+            FileText: `<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`,
+        };
+
+        // 初始表單數據 (數值 now default to common figures as they are mandatory)
+        let formData = {
+            systolic: 120, // 收縮壓預設值
+            diastolic: 80,   // 舒張壓預設值
+            pulse: 72,      // 心率預設值
+            date: new Date().toISOString().split('T')[0],
+            time: new Date().toTimeString().split(' ')[0].slice(0, 5),
+            note: ''
+        };
+        let errors = {};
+
+        // --- 核心工具函數 ---
+
+        /**
+         * 顯示自定義模態框 (取代 alert/confirm)
+         */
+        function showModal(title, message, isConfirm = false, onConfirm = null) {
+            const container = document.getElementById('modal-container');
+            const modal = document.getElementById('custom-modal');
+            const titleEl = document.getElementById('modal-title');
+            const messageEl = document.getElementById('modal-message');
+            const actionsEl = document.getElementById('modal-actions');
+
+            titleEl.textContent = title;
+            messageEl.textContent = message;
+            actionsEl.innerHTML = ''; 
+
+            const closeButton = `<button onclick="hideModal()" class="px-4 py-2 bg-slate-100 text-slate-700 font-semibold rounded-lg hover:bg-slate-200 transition-colors">關閉</button>`;
+            
+            if (isConfirm) {
+                const confirmButton = `<button id="modal-confirm-btn" class="px-4 py-2 bg-red-600 text-white font-semibold rounded-lg hover:bg-red-700 transition-colors">確認刪除</button>`;
+                actionsEl.innerHTML = closeButton + confirmButton;
+                document.getElementById('modal-confirm-btn').onclick = () => {
+                    hideModal();
+                    if (onConfirm) onConfirm();
+                };
+            } else {
+                actionsEl.innerHTML = closeButton;
+            }
+
+            container.classList.remove('hidden');
+            container.classList.add('flex');
+            setTimeout(() => {
+                modal.classList.remove('opacity-0', 'scale-95');
+                modal.classList.add('opacity-100', 'scale-100');
+            }, 10);
+        }
+
+        function hideModal() {
+            const container = document.getElementById('modal-container');
+            const modal = document.getElementById('custom-modal');
+            
+            modal.classList.remove('opacity-100', 'scale-100');
+            modal.classList.add('opacity-0', 'scale-95');
+            
+            setTimeout(() => {
+                container.classList.remove('flex');
+                container.classList.add('hidden');
+            }, 300);
+        }
+
+        /**
+         * 判斷血壓等級
+         */
+        function getBPCategory(sys, dia) {
+            sys = parseInt(sys);
+            dia = parseInt(dia);
+
+            if (isNaN(sys) || isNaN(dia)) return { label: '未知', color: 'text-gray-500', bg: 'bg-gray-100' };
+            
+            if (sys > 180 || dia > 120) return { label: '高血壓危象', color: 'text-red-700', bg: 'bg-red-100' };
+            if (sys >= 140 || dia >= 90) return { label: '高血壓二期', color: 'text-red-600', bg: 'bg-red-50' };
+            if (sys >= 130 || dia >= 80) return { label: '高血壓一期', color: 'text-orange-600', bg: 'bg-orange-50' };
+            if (sys >= 120 && dia < 80) return { label: '血壓升高', color: 'text-yellow-600', bg: 'bg-yellow-50' };
+            if (sys < 120 && dia < 80) return { label: '正常', color: 'text-green-600', bg: 'bg-green-50' };
+            
+            return { label: '數值異常', color: 'text-gray-500', bg: 'bg-gray-100' };
+        }
+
+        /**
+         * 計算統計數據
+         */
+        function calculateStats() {
+            if (records.length === 0) return null;
+
+            const sysSum = records.reduce((acc, curr) => acc + curr.systolic, 0);
+            const diaSum = records.reduce((acc, curr) => acc + curr.diastolic, 0);
+            const maxSys = Math.max(...records.map(r => r.systolic));
+            const minSys = Math.min(...records.map(r => r.systolic));
+
+            return {
+              avgSys: Math.round(sysSum / records.length),
+              avgDia: Math.round(diaSum / records.length),
+              maxSys,
+              minSys,
+              total: records.length
+            };
+        }
+
+        /**
+         * 從 localStorage 載入記錄
+         */
+        function loadRecords() {
+            const savedData = localStorage.getItem('bp_records');
+            records = savedData ? JSON.parse(savedData) : [];
+            // 確保記錄按時間排序 (最新的在前面)
+            records.sort((a, b) => b.timestamp - a.timestamp);
+        }
+
+        /**
+         * 儲存記錄到 localStorage
+         */
+        function saveRecords() {
+            localStorage.setItem('bp_records', JSON.stringify(records));
+        }
+
+        // --- 事件處理與邏輯 ---
+        
+        /**
+         * 統一處理數值更新 (Slider 或 Stepper)
+         * @param {string} name - 欄位名稱 (systolic, diastolic, pulse)
+         * @param {number|string} value - 新數值
+         */
+        window.handleValueUpdate = function(name, value) {
+            const numValue = parseInt(value);
+            
+            // 根據欄位檢查邊界
+            let min, max;
+            if (name === 'systolic') { min = 50; max = 300; }
+            else if (name === 'diastolic') { min = 30; max = 200; }
+            else if (name === 'pulse') { min = 30; max = 250; }
+            
+            // 確保數值在邊界內
+            const clampedValue = Math.max(min, Math.min(max, numValue));
+            formData[name] = clampedValue;
+            
+            // 清除該欄位錯誤
+            if (errors[name]) {
+                errors[name] = null;
+            }
+            
+            // 如果在輸入介面，重新渲染以顯示即時反饋
+            if (currentView === 'input') {
+                renderMainContent();
+            }
+        };
+        
+        /**
+         * 處理微調按鈕 (+/-) 點擊
+         * @param {string} name - 欄位名稱
+         * @param {number} delta - 增減量 (通常是 +1 或 -1)
+         */
+        window.adjustValue = function(name, delta) {
+            const currentValue = formData[name];
+            const newValue = currentValue + delta;
+            window.handleValueUpdate(name, newValue);
+        };
+
+        /**
+         * 處理日期、時間或備註的輸入變更
+         */
+        window.handleInputChange = function(element) {
+            const { name, value } = element;
+            formData[name] = value;
+            
+            // 清除該欄位錯誤
+            if (errors[name]) {
+                errors[name] = null;
+            }
+            
+            // 如果在輸入介面，重新渲染
+            if (currentView === 'input') {
+                renderMainContent();
+            }
+        };
+
+
+        /**
+         * 驗證表單數據
+         */
+        function validateForm() {
+            const newErrors = {};
+            const sys = formData.systolic;
+            const dia = formData.diastolic;
+            const pul = formData.pulse;
+
+            // 由於滑桿保證了數值在範圍內，這裡只做核心邏輯檢查
+            
+            // 1. 檢查收縮壓和舒張壓的關係
+            if (dia >= sys) newErrors.diastolic = "舒張壓不可高於或等於收縮壓";
+            
+            // 2. 由於現在是滑桿輸入，所有數值都被確保存在且在合理範圍內，
+            // 因此不再需要檢查 "請輸入..." 的錯誤，只需檢查數值邏輯即可。
+
+            errors = newErrors;
+            return Object.keys(errors).length === 0;
+        }
+
+        /**
+         * 處理表單提交
+         */
+        window.handleSubmit = function(e) {
+            e.preventDefault();
+            
+            if (!validateForm()) {
+                renderApp(); // 重新渲染以顯示錯誤
+                return;
+            }
+
+            const sys = formData.systolic;
+            const dia = formData.diastolic;
+            const pul = formData.pulse;
+
+            const newRecord = {
+              id: Date.now(),
+              systolic: sys,
+              diastolic: dia,
+              pulse: pul,
+              date: formData.date,
+              time: formData.time,
+              note: formData.note,
+              timestamp: new Date(`${formData.date}T${formData.time}`).getTime()
+            };
+
+            // 新增並保持最新的在前面
+            records = [newRecord, ...records];
+            saveRecords();
+            
+            // 重置表單數值為預設，日期時間保留
+            formData = {
+              systolic: 120, 
+              diastolic: 80,   
+              pulse: 72,      
+              date: formData.date,
+              time: formData.time,
+              note: ''
+            };
+            
+            showModal('儲存成功', '血壓記錄已成功儲存！');
+            renderApp(); // 重新渲染應用程式
+        };
+
+        /**
+         * 處理記錄刪除
+         */
+        window.handleDelete = function(id) {
+            showModal('確認刪除', '您確定要刪除這筆血壓記錄嗎？此操作無法恢復。', true, () => {
+                records = records.filter(r => r.id !== id);
+                saveRecords();
+                renderApp(); 
+            });
+        };
+
+        /**
+         * 處理視圖切換
+         */
+        window.setView = function(viewName) {
+            currentView = viewName;
+            renderApp();
+        };
+
+        // --- 渲染組件 ---
+        
+        /**
+         * 渲染滑動拉桿 + 微調按鈕 輸入組件
+         */
+        function renderSliderInput(name, label, unit, min, max, error) {
+            const value = formData[name];
+            const errorMsg = error ? `<p class="text-red-500 text-xs mt-1">${error}</p>` : '';
+            const isPrimary = name === 'systolic' || name === 'diastolic';
+            const colorClasses = {
+                systolic: 'text-red-600',
+                diastolic: 'text-blue-600',
+                pulse: 'text-rose-500'
+            };
+            const accentColor = name === 'pulse' ? '#f43f5e' : '#0d9488'; // Rose or Teal
+            const trackColor = name === 'pulse' ? '#fecaca' : '#b2f5ea'; // Rose-200 or Teal-200
+
+
+            return `
+                <div class="py-2">
+                    <label class="block text-sm font-medium text-slate-600 mb-2">${label}</label>
+                    
+                    <!-- 數值顯示 -->
+                    <div class="flex justify-between items-baseline mb-2">
+                        <div class="text-3xl font-extrabold ${colorClasses[name]}">${value} <span class="text-lg font-normal text-slate-400 ml-1">${unit}</span></div>
+                        <span class="text-sm text-slate-400">微調步長: 1</span>
+                    </div>
+
+                    <!-- 滑桿與微調按鈕 -->
+                    <div class="flex items-center gap-3 bg-slate-100 p-3 rounded-xl ${error ? 'border-2 border-red-500' : ''}">
+                        
+                        <!-- 減按鈕 -->
+                        <button 
+                            type="button"
+                            onclick="adjustValue('${name}', -1)"
+                            class="p-2 w-10 h-10 bg-white border border-slate-200 rounded-lg text-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors active:scale-95 shadow-sm"
+                        >
+                            −
+                        </button>
+                        
+                        <!-- 滑桿 -->
+                        <input
+                            type="range"
+                            name="${name}"
+                            min="${min}"
+                            max="${max}"
+                            step="1"
+                            value="${value}"
+                            oninput="handleValueUpdate('${name}', this.value)"
+                            class="flex-grow h-2 rounded-full appearance-none cursor-pointer range-lg"
+                            style="--webkit-slider-thumb-bg: ${accentColor}; accent-color: ${accentColor};"
+                            data-track-color="${trackColor}"
+                        />
+                        
+                        <!-- 加按鈕 -->
+                        <button 
+                            type="button"
+                            onclick="adjustValue('${name}', 1)"
+                            class="p-2 w-10 h-10 bg-white border border-slate-200 rounded-lg text-xl font-bold text-slate-600 hover:bg-slate-200 transition-colors active:scale-95 shadow-sm"
+                        >
+                            +
+                        </button>
+                    </div>
+                    ${errorMsg}
+                </div>
+            `;
+        }
+
+        function renderHeader() {
+            return `
+                <header class="bg-white shadow-sm sticky top-0 z-10">
+                    <div class="max-w-md mx-auto px-4 py-4 flex items-center justify-between">
+                        <div class="flex items-center gap-2">
+                            <div class="bg-teal-600 text-white p-1.5 rounded-lg">
+                                ${ICONS.Activity.replace('width="24" height="24"', 'class="w-5 h-5"')}
+                            </div>
+                            <h1 class="text-lg font-bold tracking-tight">血壓小幫手</h1>
+                        </div>
+                        <div class="text-xs text-slate-400 font-medium">
+                            本地存儲版
+                        </div>
+                    </div>
+                </header>
+            `;
+        }
+
+        function renderFooter() {
+            const getButtonClass = (viewName) => 
+                `flex flex-col items-center justify-center gap-1 text-xs font-medium transition-colors 
+                ${currentView === viewName ? 'text-teal-600' : 'text-slate-400 hover:text-slate-600'}`;
+            
+            const getIconSvg = (iconName, viewName) => {
+                let svg = ICONS[iconName];
+                // 應用寬高類別
+                svg = svg.replace('width="24" height="24"', 'class="w-6 h-6"');
+                // 如果是當前視圖，將填充色設為背景色（實現填充效果）
+                if (currentView === viewName) {
+                    svg = svg.replace('fill="none"', 'fill="currentColor"').replace('stroke="currentColor"', 'stroke="white"');
+                }
+                return svg;
+            };
+
+            return `
+                <nav class="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 shadow-[0_-4px_6px_-1px_rgba(0,0,0,0.05)] z-20">
+                    <div class="max-w-md mx-auto grid grid-cols-3 h-16">
+                        <button onclick="setView('input')" class="${getButtonClass('input')}">
+                            ${getIconSvg('PlusCircle', 'input')}
+                            記錄
+                        </button>
+                        <button onclick="setView('history')" class="${getButtonClass('history')}">
+                            ${getIconSvg('History', 'history')}
+                            歷史
+                        </button>
+                        <button onclick="setView('stats')" class="${getButtonClass('stats')}">
+                            ${getIconSvg('TrendingUp', 'stats')}
+                            分析
+                        </button>
+                    </div>
+                </nav>
+            `;
+        }
+
+        function renderInputView() {
+            let feedback = '';
+            if (formData.systolic && formData.diastolic && !errors.systolic && !errors.diastolic) {
+                const status = getBPCategory(formData.systolic, formData.diastolic);
+                feedback = `
+                    <div class="p-3 rounded-xl text-sm flex items-center gap-2 ${status.bg} ${status.color}">
+                        ${ICONS.Activity.replace('width="24" height="24"', 'class="w-4 h-4"')}
+                        <span>當前判斷等級：<strong>${status.label}</strong></span>
+                    </div>
+                `;
+            }
+
+            return `
+                <div class="space-y-6 animate-fade-in">
+                    <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                        <h2 class="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+                            ${ICONS.PlusCircle.replace('width="24" height="24"', 'class="w-5 h-5 text-teal-600"')}
+                            新增測量記錄
+                        </h2>
+                        
+                        <form id="bp-form" class="space-y-6">
+                            
+                            <!-- 收縮壓 (Slider/Stepper) -->
+                            ${renderSliderInput(
+                                'systolic', 
+                                '收縮壓 (高壓)', 
+                                'mmHg', 
+                                50, 
+                                300, 
+                                errors.systolic
+                            )}
+
+                            <!-- 舒張壓 (Slider/Stepper) -->
+                            ${renderSliderInput(
+                                'diastolic', 
+                                '舒張壓 (低壓)', 
+                                'mmHg', 
+                                30, 
+                                200, 
+                                errors.diastolic
+                            )}
+
+                            <!-- 即時反饋等級 -->
+                            ${feedback}
+                            
+                            <!-- 心率 (Slider/Stepper) -->
+                            ${renderSliderInput(
+                                'pulse', 
+                                '心率 (脈搏)', 
+                                '次/分', 
+                                30, 
+                                250, 
+                                errors.pulse
+                            )}
+
+                            <div class="grid grid-cols-2 gap-4 pt-2">
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-600 mb-1">日期</label>
+                                    <input
+                                        type="date"
+                                        name="date"
+                                        value="${formData.date}"
+                                        oninput="handleInputChange(this)"
+                                        class="w-full p-3 rounded-xl border border-slate-200 focus:border-teal-500 outline-none"
+                                    />
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium text-slate-600 mb-1">時間</label>
+                                    <input
+                                        type="time"
+                                        name="time"
+                                        value="${formData.time}"
+                                        oninput="handleInputChange(this)"
+                                        class="w-full p-3 rounded-xl border border-slate-200 focus:border-teal-500 outline-none"
+                                    />
+                                </div>
+                            </div>
+
+                            <div>
+                                <label class="block text-sm font-medium text-slate-600 mb-1">備註 <span class="text-slate-400 font-normal">- 選填</span></label>
+                                <textarea
+                                    name="note"
+                                    oninput="handleInputChange(this)"
+                                    rows="2"
+                                    class="w-full p-3 rounded-xl border border-slate-200 focus:border-teal-500 outline-none resize-none"
+                                    placeholder="例：剛運動完、吃藥後..."
+                                >${formData.note}</textarea>
+                            </div>
+
+                            <button
+                                type="submit"
+                                class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3.5 rounded-xl shadow-lg shadow-teal-200 transition-all active:scale-95 flex items-center justify-center gap-2"
+                            >
+                                ${ICONS.Save.replace('width="24" height="24"', 'class="w-5 h-5"')}
+                                儲存記錄
+                            </button>
+                        </form>
+                    </div>
+                </div>
+            `;
+        }
+        
+        // 渲染主內容的函數 (用於重新渲染)
+        function renderMainContent() {
+            const mainContent = document.querySelector('main');
+            if (!mainContent) return;
+
+            switch(currentView) {
+                case 'input':
+                    mainContent.innerHTML = renderInputView();
+                    // 重新附加表單提交監聽器
+                    const form = document.getElementById('bp-form');
+                    if (form) form.onsubmit = handleSubmit;
+                    break;
+                case 'history':
+                    mainContent.innerHTML = renderHistoryView();
+                    break;
+                case 'stats':
+                    mainContent.innerHTML = renderStatsView();
+                    // 在渲染 Stats 時調用圖表渲染
+                    setTimeout(renderChart, 10);
+                    break;
+            }
+        }
+
+
+        function renderHistoryView() {
+            let historyList = '';
+            if (records.length === 0) {
+                historyList = `
+                    <div class="text-center py-12 text-slate-400 bg-slate-50 rounded-2xl border border-dashed border-slate-200">
+                        ${ICONS.FileText.replace('width="24" height="24"', 'class="w-12 h-12 mx-auto mb-2 opacity-50"')}
+                        <p>目前還沒有記錄喔，快去新增第一筆吧！</p>
+                    </div>
+                `;
+            } else {
+                historyList = records.map(record => {
+                    const status = getBPCategory(record.systolic, record.diastolic);
+                    const pulseDisplay = record.pulse !== '-' ? `
+                        <div class="flex items-center gap-1 text-sm text-slate-600">
+                            ${ICONS.Heart.replace('width="24" height="24"', 'class="w-3 h-3 text-rose-500"')}
+                            心率: ${record.pulse}
+                        </div>` : '';
+                    
+                    const noteDisplay = record.note ? `
+                        <div class="mt-2 text-sm text-slate-500 bg-slate-50 p-2 rounded">
+                            備註: ${record.note}
+                        </div>` : '';
+
+                    return `
+                        <div class="bg-white p-4 rounded-xl shadow-sm border border-slate-100 hover:shadow-md transition-shadow relative overflow-hidden">
+                            <div class="absolute left-0 top-0 bottom-0 w-1.5 ${status.bg.replace('bg-', 'bg-').replace('50', '500')}"></div>
+                            <div class="flex justify-between items-start pl-2">
+                                <div>
+                                    <div class="flex items-baseline gap-1 text-slate-500 text-sm mb-1">
+                                        ${ICONS.Calendar.replace('width="24" height="24"', 'class="w-3 h-3"')}
+                                        ${record.date} <span class="mx-1">|</span> ${record.time}
+                                    </div>
+                                    <div class="flex items-end gap-3 mb-1">
+                                        <div class="text-2xl font-bold text-slate-800">
+                                            ${record.systolic} <span class="text-sm font-normal text-slate-400">/</span> ${record.diastolic}
+                                            <span class="text-xs font-normal text-slate-400 ml-1">mmHg</span>
+                                        </div>
+                                        <div class="text-xs px-2 py-0.5 rounded-full font-medium ${status.bg} ${status.color}">
+                                            ${status.label}
+                                        </div>
+                                    </div>
+                                    ${pulseDisplay}
+                                    ${noteDisplay}
+                                </div>
+                                <button 
+                                    onclick="handleDelete(${record.id})"
+                                    class="p-2 text-slate-300 hover:text-red-500 hover:bg-red-50 rounded-full transition-colors"
+                                >
+                                    ${ICONS.Trash2.replace('width="24" height="24"', 'class="w-5 h-5"')}
+                                </button>
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
+
+            return `
+                <div class="space-y-4 animate-fade-in">
+                    <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2 mb-2">
+                        ${ICONS.History.replace('width="24" height="24"', 'class="w-5 h-5 text-teal-600"')}
+                        歷史記錄 (${records.length})
+                    </h2>
+                    <div class="space-y-3 custom-scrollbar max-h-[70vh] overflow-y-auto">
+                        ${historyList}
+                    </div>
+                </div>
+            `;
+        }
+
+        function renderStatsView() {
+            const stats = calculateStats();
+
+            if (!stats || records.length < 2) {
+                return `
+                    <div class="space-y-6 animate-fade-in">
+                        <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                            ${ICONS.TrendingUp.replace('width="24" height="24"', 'class="w-5 h-5 text-teal-600"')}
+                            趨勢與分析
+                        </h2>
+                        <div class="bg-white p-6 rounded-2xl shadow-sm border border-slate-100">
+                            <div class="text-center py-6 text-slate-400">
+                                ${ICONS.Activity.replace('width="24" height="24"', 'class="w-12 h-12 mx-auto mb-2 opacity-50"')}
+                                <p>需要至少 2 筆數據才能顯示趨勢圖表。</p>
+                                <p class="text-sm text-slate-500 mt-2">目前有 ${records.length} 筆記錄。</p>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }
+
+            let advice = '';
+            if (stats.avgSys >= 130) {
+                advice = `
+                    <div class="bg-orange-50 border border-orange-200 p-4 rounded-xl flex gap-3 items-start">
+                        ${ICONS.AlertCircle.replace('width="24" height="24"', 'class="w-5 h-5 text-orange-600 flex-shrink-0 mt-0.5"')}
+                        <div>
+                            <h4 class="font-bold text-orange-800 text-sm">注意平均血壓偏高</h4>
+                            <p class="text-xs text-orange-700 mt-1">您的平均收縮壓 (${stats.avgSys} mmHg) 已達到高血壓前期標準。建議減少鈉攝取量，保持規律運動，並諮詢醫師建議。</p>
+                        </div>
+                    </div>
+                `;
+            }
+
+            const html = `
+                <div class="space-y-6 animate-fade-in">
+                    <h2 class="text-xl font-bold text-slate-800 flex items-center gap-2">
+                        ${ICONS.TrendingUp.replace('width="24" height="24"', 'class="w-5 h-5 text-teal-600"')}
+                        趨勢與分析
+                    </h2>
+                    
+                    <!-- 摘要卡片 -->
+                    <div class="grid grid-cols-2 gap-3">
+                        <div class="bg-gradient-to-br from-teal-50 to-white p-4 rounded-2xl border border-teal-100 shadow-sm">
+                            <div class="text-teal-600 text-xs font-bold uppercase tracking-wider mb-1">平均血壓</div>
+                            <div class="text-2xl font-bold text-slate-800">${stats.avgSys} / ${stats.avgDia}</div>
+                            <div class="text-xs text-slate-400 mt-1">mmHg (共 ${stats.total} 筆)</div>
+                        </div>
+                        <div class="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
+                            <div class="text-slate-500 text-xs font-bold uppercase tracking-wider mb-1">最高/最低 收縮壓</div>
+                            <div class="text-xl font-bold text-red-600">${stats.maxSys} / ${stats.minSys}</div>
+                            <div class="text-xs text-slate-400 mt-1">mmHg</div>
+                        </div>
+                    </div>
+
+                    <!-- 圖表 -->
+                    <div class="bg-white p-4 rounded-2xl shadow-sm border border-slate-100">
+                        <h3 class="text-sm font-semibold text-slate-700 mb-4">近期趨勢 (最近20筆)</h3>
+                        <div class="h-64 w-full">
+                            <canvas id="bpChart"></canvas>
+                        </div>
+                    </div>
+
+                    <!-- 建議提示 -->
+                    ${advice}
+                </div>
+            `;
+            
+            return html;
+        }
+
+        /**
+         * 使用 Chart.js 渲染趨勢圖表
+         */
+        function renderChart() {
+            if (chartInstance) {
+                chartInstance.destroy(); // 銷毀舊實例
+            }
+            
+            const chartElement = document.getElementById('bpChart');
+            if (!chartElement) return;
+
+            // 數據必須按時間舊 -> 新排序
+            const chartData = [...records].sort((a, b) => a.timestamp - b.timestamp).slice(-20);
+            
+            const labels = chartData.map(r => `${r.date.slice(5)} ${r.time}`); // MM-DD HH:MM
+            const systolicData = chartData.map(r => r.systolic);
+            const diastolicData = chartData.map(r => r.diastolic);
+            
+            chartInstance = new Chart(chartElement, {
+                type: 'line',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        {
+                            label: '收縮壓',
+                            data: systolicData,
+                            borderColor: '#ef4444', // Red-500
+                            backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                            tension: 0.3,
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                            fill: false,
+                        },
+                        {
+                            label: '舒張壓',
+                            data: diastolicData,
+                            borderColor: '#3b82f6', // Blue-500
+                            backgroundColor: 'rgba(59, 130, 246, 0.1)',
+                            tension: 0.3,
+                            pointRadius: 4,
+                            pointHoverRadius: 6,
+                            fill: false,
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    scales: {
+                        y: {
+                            beginAtZero: false,
+                            title: {
+                                display: true,
+                                text: 'mmHg',
+                                color: '#64748b'
+                            },
+                            ticks: {
+                                color: '#64748b'
+                            },
+                            grid: {
+                                color: '#e2e8f0',
+                                drawBorder: false
+                            }
+                        },
+                        x: {
+                            ticks: {
+                                color: '#64748b',
+                                maxRotation: 45,
+                                minRotation: 45
+                            },
+                            grid: {
+                                display: false
+                            }
+                        }
+                    },
+                    plugins: {
+                        legend: {
+                            position: 'top',
+                            labels: {
+                                boxWidth: 10,
+                                padding: 15,
+                                font: {
+                                    size: 12
+                                }
+                            }
+                        },
+                        tooltip: {
+                            mode: 'index',
+                            intersect: false,
+                            backgroundColor: '#fff',
+                            titleColor: '#1e293b',
+                            bodyColor: '#475569',
+                            borderColor: '#cbd5e1',
+                            borderWidth: 1,
+                            cornerRadius: 8,
+                            padding: 10
+                        },
+                    }
+                }
+            });
+        }
+
+        /**
+         * 主要渲染函數：根據 currentView 渲染整個應用程式
+         */
+        function renderApp() {
+            // 1. 渲染 Header
+            app.innerHTML = renderHeader();
+            
+            const mainContent = document.createElement('main');
+            mainContent.className = 'max-w-md mx-auto p-4';
+            app.appendChild(mainContent);
+            
+            // 2. 渲染主視圖
+            renderMainContent();
+            
+            // 3. 渲染 Footer
+            app.innerHTML += renderFooter();
+        }
+
+        // --- 應用程式初始化 ---
+        window.onload = function() {
+            loadRecords();
+            renderApp();
+        };
+
+        // 必須將模態框函數公開，供 HTML 內聯事件調用
+        window.hideModal = hideModal;
+
+    </script>
+</body>
+</html>
